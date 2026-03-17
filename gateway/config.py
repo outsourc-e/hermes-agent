@@ -21,6 +21,17 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce bool-ish config values, preserving a caller-provided default."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -86,10 +97,11 @@ class SessionResetPolicy:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
         # Handle both missing keys and explicit null values (YAML null → None)
+        mode = data.get("mode")
         at_hour = data.get("at_hour")
         idle_minutes = data.get("idle_minutes")
         return cls(
-            mode=data.get("mode", "both"),
+            mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
         )
@@ -135,6 +147,37 @@ class PlatformConfig:
 
 
 @dataclass
+class StreamingConfig:
+    """Configuration for real-time token streaming to messaging platforms."""
+    enabled: bool = False
+    transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
+    edit_interval: float = 0.3    # Seconds between message edits
+    buffer_threshold: int = 40    # Chars before forcing an edit
+    cursor: str = " ▉"           # Cursor shown during streaming
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "transport": self.transport,
+            "edit_interval": self.edit_interval,
+            "buffer_threshold": self.buffer_threshold,
+            "cursor": self.cursor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=data.get("enabled", False),
+            transport=data.get("transport", "edit"),
+            edit_interval=float(data.get("edit_interval", 0.3)),
+            buffer_threshold=int(data.get("buffer_threshold", 40)),
+            cursor=data.get("cursor", " ▉"),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -160,7 +203,16 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
-    
+
+    # STT settings
+    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+
+    # Session isolation in shared chats
+    group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
+
+    # Streaming configuration
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -224,6 +276,9 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "stt_enabled": self.stt_enabled,
+            "group_sessions_per_user": self.group_sessions_per_user,
+            "streaming": self.streaming.to_dict(),
         }
     
     @classmethod
@@ -260,6 +315,12 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        stt_enabled = data.get("stt_enabled")
+        if stt_enabled is None:
+            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+
+        group_sessions_per_user = data.get("group_sessions_per_user")
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -269,6 +330,9 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            stt_enabled=_coerce_bool(stt_enabled, True),
+            group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+            streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
 
 
@@ -317,6 +381,20 @@ def load_gateway_config() -> GatewayConfig:
                     config.quick_commands = qc
                 else:
                     logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+
+            # Bridge STT enable/disable from config.yaml into gateway runtime.
+            # This keeps the gateway aligned with the user-facing config source.
+            stt_cfg = yaml_cfg.get("stt")
+            if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
+                config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
+
+            # Bridge group session isolation from config.yaml into gateway runtime.
+            # Secure default is per-user isolation in shared chats.
+            if "group_sessions_per_user" in yaml_cfg:
+                config.group_sessions_per_user = _coerce_bool(
+                    yaml_cfg.get("group_sessions_per_user"),
+                    True,
+                )
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)

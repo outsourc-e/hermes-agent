@@ -45,29 +45,39 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 
 ## Interface Layout
 
-```text
-┌─────────────────────────────────────────────────┐
-│  HERMES-AGENT ASCII Logo                        │
-│  ┌─────────────┐ ┌────────────────────────────┐ │
-│  │  Caduceus   │ │ Model: claude-sonnet-4     │ │
-│  │  ASCII Art  │ │ Terminal: local            │ │
-│  │             │ │ Working Dir: /home/user    │ │
-│  │             │ │ Available Tools: 19        │ │
-│  │             │ │ Available Skills: 12       │ │
-│  └─────────────┘ └────────────────────────────┘ │
-├─────────────────────────────────────────────────┤
-│ Conversation output scrolls here...             │
-│                                                 │
-│   (◕‿◕✿) 🧠 pondering... (2.3s)                │
-│   ✧٩(ˊᗜˋ*)و✧ got it! (2.3s)                    │
-│                                                 │
-│ Assistant: Hello! How can I help you today?     │
-├─────────────────────────────────────────────────┤
-│ ❯ [Fixed input area at bottom]                  │
-└─────────────────────────────────────────────────┘
-```
+<img className="docs-terminal-figure" src="/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
+<p className="docs-figure-caption">The Hermes CLI banner, conversation stream, and fixed input prompt rendered as a stable docs figure instead of fragile text art.</p>
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
+
+### Status Bar
+
+A persistent status bar sits above the input area, updating in real time:
+
+```
+ ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+```
+
+| Element | Description |
+|---------|-------------|
+| Model name | Current model (truncated if longer than 26 chars) |
+| Token count | Context tokens used / max context window |
+| Context bar | Visual fill indicator with color-coded thresholds |
+| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| Duration | Elapsed session time |
+
+The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration only) below 52.
+
+**Context color coding:**
+
+| Color | Threshold | Meaning |
+|-------|-----------|---------|
+| Green | < 50% | Plenty of room |
+| Yellow | 50–80% | Getting full |
+| Orange | 80–95% | Approaching limit |
+| Red | ≥ 95% | Near overflow — consider `/compress` |
+
+Use `/usage` for a detailed breakdown including per-category costs (input vs output tokens).
 
 ### Session Resume Display
 
@@ -277,6 +287,55 @@ compression:
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 4 turns are always preserved.
+
+## Background Sessions
+
+Run a prompt in a separate background session while continuing to use the CLI for other work:
+
+```
+/background Analyze the logs in /var/log and summarize any errors from today
+```
+
+Hermes immediately confirms the task and gives you back the prompt:
+
+```
+🔄 Background task #1 started: "Analyze the logs in /var/log and summarize..."
+   Task ID: bg_143022_a1b2c3
+```
+
+### How It Works
+
+Each `/background` prompt spawns a **completely separate agent session** in a daemon thread:
+
+- **Isolated conversation** — the background agent has no knowledge of your current session's history. It receives only the prompt you provide.
+- **Same configuration** — the background agent inherits your model, provider, toolsets, reasoning settings, and fallback model from the current session.
+- **Non-blocking** — your foreground session stays fully interactive. You can chat, run commands, or even start more background tasks.
+- **Multiple tasks** — you can run several background tasks simultaneously. Each gets a numbered ID.
+
+### Results
+
+When a background task finishes, the result appears as a panel in your terminal:
+
+```
+╭─ ⚕ Hermes (background #1) ──────────────────────────────────╮
+│ Found 3 errors in syslog from today:                         │
+│ 1. OOM killer invoked at 03:22 — killed process nginx        │
+│ 2. Disk I/O error on /dev/sda1 at 07:15                      │
+│ 3. Failed SSH login attempts from 192.168.1.50 at 14:30      │
+╰──────────────────────────────────────────────────────────────╯
+```
+
+If the task fails, you'll see an error notification instead. If `display.bell_on_complete` is enabled in your config, the terminal bell rings when the task finishes.
+
+### Use Cases
+
+- **Long-running research** — "/background research the latest developments in quantum error correction" while you work on code
+- **File processing** — "/background analyze all Python files in this repo and list any security issues" while you continue a conversation
+- **Parallel investigations** — start multiple background tasks to explore different angles simultaneously
+
+:::info
+Background sessions do not appear in your main conversation history. They are standalone sessions with their own task ID (e.g., `bg_143022_a1b2c3`).
+:::
 
 ## Quiet Mode
 

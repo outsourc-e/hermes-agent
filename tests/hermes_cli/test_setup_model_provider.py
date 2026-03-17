@@ -39,6 +39,8 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     """Keep-current custom should not fall through to the generic model menu."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
+    save_env_value("OPENAI_BASE_URL", "https://example.invalid/v1")
+    save_env_value("OPENAI_API_KEY", "custom-key")
 
     config = load_config()
     config["model"] = {
@@ -55,10 +57,6 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
         if calls["count"] == 1:
             assert choices[-1] == "Keep current (Custom: https://example.invalid/v1)"
             return len(choices) - 1
-        if calls["count"] == 2:
-            assert question == "Configure vision:"
-            assert choices[-1] == "Skip for now"
-            return len(choices) - 1
         raise AssertionError("Model menu should not appear for keep-current custom")
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
@@ -74,7 +72,59 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     assert reloaded["model"]["provider"] == "custom"
     assert reloaded["model"]["default"] == "custom/model"
     assert reloaded["model"]["base_url"] == "https://example.invalid/v1"
-    assert calls["count"] == 2
+    assert calls["count"] == 1
+
+
+def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 3  # Custom endpoint
+        if question == "Configure vision:":
+            return len(choices) - 1  # Skip
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000"
+        if "API key" in message:
+            return "local-key"
+        if "Model name" in message:
+            return "llm"
+        return ""
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["llm"],
+            "probed_url": "http://localhost:8000/v1/models",
+            "resolved_base_url": "http://localhost:8000/v1",
+            "suggested_base_url": "http://localhost:8000/v1",
+            "used_fallback": True,
+        },
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    env = _read_env(tmp_path)
+    reloaded = load_config()
+
+    assert env.get("OPENAI_BASE_URL") == "http://localhost:8000/v1"
+    assert env.get("OPENAI_API_KEY") == "local-key"
+    assert reloaded["model"]["provider"] == "custom"
+    assert reloaded["model"]["base_url"] == "http://localhost:8000/v1"
+    assert reloaded["model"]["default"] == "llm"
 
 
 def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tmp_path, monkeypatch):
@@ -113,6 +163,7 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tm
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
     save_config(config)
@@ -151,6 +202,7 @@ def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_pa
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
     env = _read_env(tmp_path)
@@ -214,7 +266,7 @@ def test_setup_summary_marks_codex_auth_as_vision_available(tmp_path, monkeypatc
     _clear_provider_env(monkeypatch)
 
     (tmp_path / "auth.json").write_text(
-        '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"tok"}}}}'
+        '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token": "***", "refresh_token": "***"}}}}'
     )
 
     monkeypatch.setattr("shutil.which", lambda _name: None)
@@ -226,3 +278,17 @@ def test_setup_summary_marks_codex_auth_as_vision_available(tmp_path, monkeypatc
     assert "missing run 'hermes setup' to configure" not in output
     assert "Mixture of Agents" in output
     assert "missing OPENROUTER_API_KEY" in output
+
+
+def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: ["anthropic"])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Vision (image analysis)" in output
+    assert "missing run 'hermes setup' to configure" not in output

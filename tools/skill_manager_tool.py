@@ -561,7 +561,8 @@ SKILL_MANAGE_SCHEMA = {
         "user-corrected approach worked, non-trivial workflow discovered, "
         "or user asks you to remember a procedure.\n"
         "Update when: instructions stale/wrong, OS-specific failures, "
-        "missing steps or pitfalls found during use.\n\n"
+        "missing steps or pitfalls found during use. "
+        "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
@@ -653,4 +654,5 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False)),
+    emoji="📝",
 )

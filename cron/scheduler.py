@@ -234,7 +234,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_name = job["name"]
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
-    delivery_target = _resolve_delivery_target(job)
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -245,11 +244,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
         if origin.get("chat_name"):
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-    if delivery_target:
-        os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-        os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-        if delivery_target.get("thread_id") is not None:
-            os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -260,7 +254,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
-        model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        delivery_target = _resolve_delivery_target(job)
+        if delivery_target:
+            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
+            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+            if delivery_target.get("thread_id") is not None:
+                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+
+        model = job.get("model") or os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -271,10 +272,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _model_cfg = _cfg.get("model", {})
-                if isinstance(_model_cfg, str):
-                    model = _model_cfg
-                elif isinstance(_model_cfg, dict):
-                    model = _model_cfg.get("default", model)
+                if not job.get("model"):
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -313,25 +315,42 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
+        smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
             format_runtime_provider_error,
         )
         try:
-            runtime = resolve_runtime_provider(
-                requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
-            )
+            runtime_kwargs = {
+                "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+            }
+            if job.get("base_url"):
+                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            runtime = resolve_runtime_provider(**runtime_kwargs)
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
+        from agent.smart_model_routing import resolve_turn_route
+        turn_route = resolve_turn_route(
+            prompt,
+            smart_routing,
+            {
+                "model": model,
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+            },
+        )
+
         agent = AIAgent(
-            model=model,
-            api_key=runtime.get("api_key"),
-            base_url=runtime.get("base_url"),
-            provider=runtime.get("provider"),
-            api_mode=runtime.get("api_mode"),
+            model=turn_route["model"],
+            api_key=turn_route["runtime"].get("api_key"),
+            base_url=turn_route["runtime"].get("base_url"),
+            provider=turn_route["runtime"].get("provider"),
+            api_mode=turn_route["runtime"].get("api_mode"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,

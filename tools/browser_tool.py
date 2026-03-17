@@ -98,6 +98,16 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+def _get_cdp_override() -> str:
+    """Return a user-supplied CDP URL override, or empty string.
+
+    When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
+    both Browserbase and the local headless launcher and connect directly to
+    the supplied Chrome DevTools Protocol endpoint.
+    """
+    return os.environ.get("BROWSER_CDP_URL", "").strip()
+
+
 def _is_local_mode() -> bool:
     """Return True when no Browserbase credentials are configured.
 
@@ -105,6 +115,8 @@ def _is_local_mode() -> bool:
     ``agent-browser --session`` instead of connecting to a remote Browserbase
     session via ``--cdp``.
     """
+    if _get_cdp_override():
+        return False  # CDP override takes priority
     return not (os.environ.get("BROWSERBASE_API_KEY") and os.environ.get("BROWSERBASE_PROJECT_ID"))
 
 
@@ -608,6 +620,20 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
     }
 
 
+def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
+    """Create a session that connects to a user-supplied CDP endpoint."""
+    import uuid
+    session_name = f"cdp_{uuid.uuid4().hex[:10]}"
+    logger.info("Created CDP browser session %s → %s for task %s",
+                session_name, cdp_url, task_id)
+    return {
+        "session_name": session_name,
+        "bb_session_id": None,
+        "cdp_url": cdp_url,
+        "features": {"cdp_override": True},
+    }
+
+
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
@@ -638,7 +664,10 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
-    if _is_local_mode():
+    cdp_override = _get_cdp_override()
+    if cdp_override:
+        session_info = _create_cdp_session(task_id, cdp_override)
+    elif _is_local_mode():
         session_info = _create_local_session(task_id)
     else:
         session_info = _create_browserbase_session(task_id)
@@ -1833,6 +1862,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
     handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🌐",
 )
 registry.register(
     name="browser_snapshot",
@@ -1841,6 +1871,7 @@ registry.register(
     handler=lambda args, **kw: browser_snapshot(
         full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
+    emoji="📸",
 )
 registry.register(
     name="browser_click",
@@ -1848,6 +1879,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
     handler=lambda args, **kw: browser_click(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="👆",
 )
 registry.register(
     name="browser_type",
@@ -1855,6 +1887,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
     handler=lambda args, **kw: browser_type(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="⌨️",
 )
 registry.register(
     name="browser_scroll",
@@ -1862,6 +1895,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
     handler=lambda args, **kw: browser_scroll(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="📜",
 )
 registry.register(
     name="browser_back",
@@ -1869,6 +1903,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
     handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="◀️",
 )
 registry.register(
     name="browser_press",
@@ -1876,6 +1911,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
     handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="⌨️",
 )
 registry.register(
     name="browser_close",
@@ -1883,6 +1919,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_close"],
     handler=lambda args, **kw: browser_close(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🚪",
 )
 registry.register(
     name="browser_get_images",
@@ -1890,6 +1927,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
     handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🖼️",
 )
 registry.register(
     name="browser_vision",
@@ -1897,6 +1935,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="👁️",
 )
 registry.register(
     name="browser_console",
@@ -1904,4 +1943,5 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🖥️",
 )

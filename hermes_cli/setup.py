@@ -227,54 +227,86 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 
+def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
+    """Single-select menu using curses to avoid simple_term_menu rendering bugs."""
+    try:
+        import curses
+        result_holder = [default]
+
+        def _curses_menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+            cursor = default
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(
+                        0,
+                        0,
+                        question,
+                        max_x - 1,
+                        curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0),
+                    )
+                except curses.error:
+                    pass
+
+                for i, choice in enumerate(choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "→" if i == cursor else " "
+                    line = f" {arrow}  {choice}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(choices)
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(choices)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result_holder[0] = cursor
+                    return
+                elif key in (27, ord("q")):
+                    return
+
+        curses.wrapper(_curses_menu)
+        return result_holder[0]
+    except Exception:
+        return -1
+
+
+
 def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
     Escape keeps the current default (skips the question).
     Ctrl+C exits the wizard.
     """
-    print(color(question, Colors.YELLOW))
-
-    # Try to use interactive menu if available
-    try:
-        from simple_term_menu import TerminalMenu
-        import re
-
-        # Strip emoji characters — simple_term_menu miscalculates visual
-        # width of emojis, causing duplicated/garbled lines on redraw.
-        _emoji_re = re.compile(
-            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
-            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+",
-            flags=re.UNICODE,
-        )
-        menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
-
-        print_info("  ↑/↓ Navigate  Enter Select  Esc Skip  Ctrl+C Exit")
-
-        terminal_menu = TerminalMenu(
-            menu_choices,
-            cursor_index=default,
-            menu_cursor="→ ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-        )
-
-        idx = terminal_menu.show()
-        if idx is None:  # User pressed Escape — keep current value
-            print_info(f"  Skipped (keeping current)")
+    idx = _curses_prompt_choice(question, choices, default)
+    if idx >= 0:
+        if idx == default:
+            print_info("  Skipped (keeping current)")
             print()
             return default
-        print()  # Add newline after selection
+        print()
         return idx
 
-    except (ImportError, NotImplementedError):
-        pass
-    except Exception as e:
-        print(f"  (Interactive menu unavailable: {e})")
-
-    # Fallback to number-based selection (simple_term_menu doesn't support Windows)
+    print(color(question, Colors.YELLOW))
     for i, choice in enumerate(choices):
         marker = "●" if i == default else "○"
         if i == default:
@@ -344,84 +376,15 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
     if pre_selected is None:
         pre_selected = []
 
-    print(color(title, Colors.YELLOW))
-    print_info("  SPACE Toggle  ENTER Confirm  ESC Skip  Ctrl+C Exit")
-    print()
+    from hermes_cli.curses_ui import curses_checklist
 
-    try:
-        from simple_term_menu import TerminalMenu
-        import re
-
-        # Strip emoji characters from menu labels — simple_term_menu miscalculates
-        # visual width of emojis on macOS, causing duplicated/garbled lines.
-        _emoji_re = re.compile(
-            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
-            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+",
-            flags=re.UNICODE,
-        )
-        menu_items = [f"  {_emoji_re.sub('', item).strip()}" for item in items]
-
-        # Map pre-selected indices to the actual menu entry strings
-        preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]
-
-        terminal_menu = TerminalMenu(
-            menu_items,
-            multi_select=True,
-            show_multi_select_hint=False,
-            multi_select_cursor="[✓] ",
-            multi_select_select_on_accept=False,
-            multi_select_empty_ok=True,
-            preselected_entries=preselected if preselected else None,
-            menu_cursor="→ ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-        )
-
-        terminal_menu.show()
-
-        if terminal_menu.chosen_menu_entries is None:
-            print_info("  Skipped (keeping current)")
-            return list(pre_selected)
-
-        selected = list(terminal_menu.chosen_menu_indices or [])
-        return selected
-
-    except (ImportError, NotImplementedError):
-        # Fallback: numbered toggle interface (simple_term_menu doesn't support Windows)
-        selected = set(pre_selected)
-
-        while True:
-            for i, item in enumerate(items):
-                marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
-                print(f"  {marker} {i + 1}. {item}")
-            print()
-
-            try:
-                value = input(
-                    color("  Toggle # (or Enter to confirm): ", Colors.DIM)
-                ).strip()
-                if not value:
-                    break
-                idx = int(value) - 1
-                if 0 <= idx < len(items):
-                    if idx in selected:
-                        selected.discard(idx)
-                    else:
-                        selected.add(idx)
-                else:
-                    print_error(f"Enter a number between 1 and {len(items)}")
-            except ValueError:
-                print_error("Enter a number")
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return []
-
-            # Clear and redraw (simple approach)
-            print()
-
-        return sorted(selected)
+    chosen = curses_checklist(
+        title,
+        items,
+        set(pre_selected),
+        cancel_returns=set(pre_selected),
+    )
+    return sorted(chosen)
 
 
 def _prompt_api_key(var: dict):
@@ -460,33 +423,15 @@ def _print_setup_summary(config: dict, hermes_home):
 
     tool_status = []
 
-    # Vision — works with OpenRouter, Nous OAuth, Codex OAuth, or OpenAI endpoint
-    _has_vision = False
-    if get_env_value("OPENROUTER_API_KEY"):
-        _has_vision = True
-    else:
-        try:
-            _vauth_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
-            if _vauth_path.is_file():
-                import json as _vjson
+    # Vision — use the same runtime resolver as the actual vision tools
+    try:
+        from agent.auxiliary_client import get_available_vision_backends
 
-                _vauth = _vjson.loads(_vauth_path.read_text())
-                if _vauth.get("active_provider") == "nous":
-                    _np = _vauth.get("providers", {}).get("nous", {})
-                    if _np.get("agent_key") or _np.get("access_token"):
-                        _has_vision = True
-                elif _vauth.get("active_provider") == "openai-codex":
-                    _cp = _vauth.get("providers", {}).get("openai-codex", {})
-                    if _cp.get("tokens", {}).get("access_token"):
-                        _has_vision = True
-        except Exception:
-            pass
-    if not _has_vision:
-        _oai_base = get_env_value("OPENAI_BASE_URL") or ""
-        if get_env_value("OPENAI_API_KEY") and "api.openai.com" in _oai_base.lower():
-            _has_vision = True
+        _vision_backends = get_available_vision_backends()
+    except Exception:
+        _vision_backends = []
 
-    if _has_vision:
+    if _vision_backends:
         tool_status.append(("Vision (image analysis)", True, None))
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
@@ -798,6 +743,7 @@ def setup_model_provider(config: dict):
     selected_provider = (
         None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
     )
+    selected_base_url = None  # deferred until after model selection
     nous_models = []  # populated if Nous login succeeds
 
     if provider_idx == 0:  # Nous Portal (OAuth)
@@ -951,11 +897,35 @@ def setup_model_provider(config: dict):
 
         base_url = prompt(
             "  API base URL (e.g., https://api.example.com/v1)", current_url
-        )
+        ).strip()
         api_key = prompt("  API key", password=True)
         model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
 
         if base_url:
+            from hermes_cli.models import probe_api_models
+
+            probe = probe_api_models(api_key, base_url)
+            if probe.get("used_fallback") and probe.get("resolved_base_url"):
+                print_warning(
+                    f"Endpoint verification worked at {probe['resolved_base_url']}/models, "
+                    f"not the exact URL you entered. Saving the working base URL instead."
+                )
+                base_url = probe["resolved_base_url"]
+            elif probe.get("models") is not None:
+                print_success(
+                    f"Verified endpoint via {probe.get('probed_url')} "
+                    f"({len(probe.get('models') or [])} model(s) visible)"
+                )
+            else:
+                print_warning(
+                    f"Could not verify this endpoint via {probe.get('probed_url')}. "
+                    f"Hermes will still save it."
+                )
+                if probe.get("suggested_base_url"):
+                    print_info(
+                        f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}"
+                    )
+
             save_env_value("OPENAI_BASE_URL", base_url)
         if api_key:
             save_env_value("OPENAI_API_KEY", api_key)
@@ -1056,8 +1026,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", zai_base_url, default_model="glm-5")
         _set_model_provider(config, "zai", zai_base_url)
+        selected_base_url = zai_base_url
 
     elif provider_idx == 5:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
@@ -1089,8 +1059,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("kimi-coding", pconfig.inference_base_url, default_model="kimi-k2.5")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
 
     elif provider_idx == 6:  # MiniMax
         selected_provider = "minimax"
@@ -1122,8 +1092,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
 
     elif provider_idx == 7:  # MiniMax China
         selected_provider = "minimax-cn"
@@ -1155,8 +1125,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax-cn", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
 
     elif provider_idx == 8:  # Anthropic
         selected_provider = "anthropic"
@@ -1259,8 +1229,8 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         # Don't save base_url for Anthropic — resolve_runtime_provider()
         # always hardcodes it. Stale base_urls contaminate other providers.
-        _update_config_for_provider("anthropic", "", default_model="claude-opus-4-6")
         _set_model_provider(config, "anthropic")
+        selected_base_url = ""
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
@@ -1276,58 +1246,20 @@ def setup_model_provider(config: dict):
             selected_provider = "openrouter"
 
     # ── Vision & Image Analysis Setup ──
-    # Vision requires a multimodal-capable provider. Check whether the user's
-    # chosen provider already covers it — if so, skip the prompt entirely.
-    _vision_needs_setup = True
+    # Keep setup aligned with the actual runtime resolver the vision tools use.
+    try:
+        from agent.auxiliary_client import get_available_vision_backends
 
-    if selected_provider == "openrouter":
-        # OpenRouter → Gemini for vision, already configured
-        _vision_needs_setup = False
-    elif selected_provider == "nous":
-        # Nous Portal OAuth → Gemini via Nous, already configured
-        _vision_needs_setup = False
-    elif selected_provider == "openai-codex":
-        # Codex OAuth → gpt-5.3-codex supports vision
-        _vision_needs_setup = False
-    elif selected_provider == "custom":
-        _custom_base = (get_env_value("OPENAI_BASE_URL") or "").lower()
-        if "api.openai.com" in _custom_base:
-            # Direct OpenAI endpoint — show vision model picker
-            print()
-            print_header("Vision Model")
-            print_info("Your OpenAI endpoint supports vision. Pick a model for image analysis:")
-            _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-            _vm_choices = _oai_vision_models + ["Keep default (gpt-4o-mini)"]
-            _vm_idx = prompt_choice("Select vision model:", _vm_choices, len(_vm_choices) - 1)
-            _selected_vision_model = (
-                _oai_vision_models[_vm_idx]
-                if _vm_idx < len(_oai_vision_models)
-                else "gpt-4o-mini"
-            )
-            save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
-            print_success(f"Vision model set to {_selected_vision_model}")
-            _vision_needs_setup = False
+        _vision_backends = set(get_available_vision_backends())
+    except Exception:
+        _vision_backends = set()
 
-    # Even for providers without native vision, check if existing credentials
-    # from a previous setup already cover it (e.g. user had OpenRouter before
-    # switching to z.ai)
-    if _vision_needs_setup:
-        if get_env_value("OPENROUTER_API_KEY"):
-            _vision_needs_setup = False
-        else:
-            # Check for Nous Portal OAuth in auth.json
-            try:
-                _auth_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
-                if _auth_path.is_file():
-                    import json as _json
+    _vision_needs_setup = not bool(_vision_backends)
 
-                    _auth_data = _json.loads(_auth_path.read_text())
-                    if _auth_data.get("active_provider") == "nous":
-                        _nous_p = _auth_data.get("providers", {}).get("nous", {})
-                        if _nous_p.get("agent_key") or _nous_p.get("access_token"):
-                            _vision_needs_setup = False
-            except Exception:
-                pass
+    if selected_provider in _vision_backends:
+        # If the user just selected a backend Hermes can already use for
+        # vision, treat it as covered. Auth/setup failure returns earlier.
+        _vision_needs_setup = False
 
     if _vision_needs_setup:
         _prov_names = {
@@ -1343,44 +1275,54 @@ def setup_model_provider(config: dict):
 
         print()
         print_header("Vision & Image Analysis (optional)")
-        print_info(f"Vision requires a multimodal-capable provider. {_prov_display}")
-        print_info("doesn't natively support it. Choose how to enable vision,")
-        print_info("or skip to configure later.")
+        print_info(f"Vision uses a separate multimodal backend. {_prov_display}")
+        print_info("doesn't currently provide one Hermes can auto-use for vision,")
+        print_info("so choose a backend now or skip and configure later.")
         print()
 
         _vision_choices = [
             "OpenRouter — uses Gemini (free tier at openrouter.ai/keys)",
-            "OpenAI — enter API key & choose a vision model",
+            "OpenAI-compatible endpoint — base URL, API key, and vision model",
             "Skip for now",
         ]
         _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
 
         if _vision_idx == 0:  # OpenRouter
-            _or_key = prompt("  OpenRouter API key", password=True)
+            _or_key = prompt("  OpenRouter API key", password=True).strip()
             if _or_key:
                 save_env_value("OPENROUTER_API_KEY", _or_key)
                 print_success("OpenRouter key saved — vision will use Gemini")
             else:
                 print_info("Skipped — vision won't be available")
-        elif _vision_idx == 1:  # OpenAI
-            _oai_key = prompt("  OpenAI API key", password=True)
+        elif _vision_idx == 1:  # OpenAI-compatible endpoint
+            _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
+            _api_key_label = "  API key"
+            if "api.openai.com" in _base_url.lower():
+                _api_key_label = "  OpenAI API key"
+            _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
-                save_env_value("OPENAI_BASE_URL", "https://api.openai.com/v1")
-                _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-                _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
-                _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
-                _selected_vision_model = (
-                    _oai_vision_models[_vm_idx]
-                    if _vm_idx < len(_oai_vision_models)
-                    else "gpt-4o-mini"
-                )
+                save_env_value("OPENAI_BASE_URL", _base_url)
+                if "api.openai.com" in _base_url.lower():
+                    _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
+                    _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
+                    _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
+                    _selected_vision_model = (
+                        _oai_vision_models[_vm_idx]
+                        if _vm_idx < len(_oai_vision_models)
+                        else "gpt-4o-mini"
+                    )
+                else:
+                    _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
                 save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
-                print_success(f"Vision configured with OpenAI ({_selected_vision_model})")
+                print_success(
+                    f"Vision configured with {_base_url}"
+                    + (f" ({_selected_vision_model})" if _selected_vision_model else "")
+                )
             else:
                 print_info("Skipped — vision won't be available")
         else:
-            print_info("Skipped — add later with 'hermes config set OPENROUTER_API_KEY ...'")
+            print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
 
     # ── Model Selection (adapts based on provider) ──
     if selected_provider != "custom":  # Custom already prompted for model name
@@ -1517,6 +1459,12 @@ def setup_model_provider(config: dict):
                 else _final_model
             )
             print_success(f"Model set to: {_display}")
+
+    # Write provider+base_url to config.yaml only after model selection is complete.
+    # This prevents a race condition where the gateway picks up a new provider
+    # before the model name has been updated to match.
+    if selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "anthropic") and selected_base_url is not None:
+        _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)
 
@@ -2186,20 +2134,22 @@ def setup_gateway(config: dict):
         print_info("      • Create an App-Level Token with 'connections:write' scope")
         print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
         print_info("      Required scopes: chat:write, app_mentions:read,")
-        print_info("      channels:history, channels:read, groups:history,")
-        print_info("      im:history, im:read, im:write, users:read, files:write")
+        print_info("      channels:history, channels:read, im:history,")
+        print_info("      im:read, im:write, users:read, files:write")
+        print_info("      Optional for private channels: groups:history")
         print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-        print_info("      Required events: message.im, message.channels,")
-        print_info("      message.groups, app_mention")
-        print_warning("   ⚠ Without message.channels/message.groups events,")
-        print_warning("     the bot will ONLY work in DMs, not channels!")
+        print_info("      Required events: message.im, message.channels, app_mention")
+        print_info("      Optional for private channels: message.groups")
+        print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
+        print_warning("     not public channels.")
         print_info("   5. Install to Workspace: Settings → Install App")
+        print_info("   6. Reinstall the app after any scope or event changes")
         print_info(
-            "   6. After installing, invite the bot to channels: /invite @YourBot"
+            "   7. After installing, invite the bot to channels: /invite @YourBot"
         )
         print()
         print_info(
-            "   Full guide: https://hermes-agent.ai/docs/user-guide/messaging/slack"
+            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/"
         )
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
@@ -2217,14 +2167,17 @@ def setup_gateway(config: dict):
             )
             print()
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
             )
             if allowed_users:
                 save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Slack allowlist configured")
             else:
+                print_warning(
+                    "⚠️  No Slack allowlist set - unpaired users will be denied by default."
+                )
                 print_info(
-                    "⚠️  No allowlist set - anyone in your workspace can use the bot!"
+                    "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
                 )
 
     # ── WhatsApp ──
@@ -2284,7 +2237,9 @@ def setup_gateway(config: dict):
         from hermes_cli.gateway import (
             _is_service_installed,
             _is_service_running,
-            systemd_install,
+            has_conflicting_systemd_units,
+            install_linux_gateway_from_setup,
+            print_systemd_scope_conflict_warning,
             systemd_start,
             systemd_restart,
             launchd_install,
@@ -2296,6 +2251,10 @@ def setup_gateway(config: dict):
         service_running = _is_service_running()
 
         print()
+        if _is_linux and has_conflicting_systemd_units():
+            print_systemd_scope_conflict_warning()
+            print()
+
         if service_running:
             if prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
@@ -2321,15 +2280,18 @@ def setup_gateway(config: dict):
                 True,
             ):
                 try:
+                    installed_scope = None
+                    did_install = False
                     if _is_linux:
-                        systemd_install(force=False)
+                        installed_scope, did_install = install_linux_gateway_from_setup(force=False)
                     else:
                         launchd_install(force=False)
+                        did_install = True
                     print()
-                    if prompt_yes_no("  Start the service now?", True):
+                    if did_install and prompt_yes_no("  Start the service now?", True):
                         try:
                             if _is_linux:
-                                systemd_start()
+                                systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
                         except Exception as e:
@@ -2339,6 +2301,8 @@ def setup_gateway(config: dict):
                     print_info("  You can try manually: hermes gateway install")
             else:
                 print_info("  You can install later: hermes gateway install")
+                if _is_linux:
+                    print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
             print_info("Start the gateway to bring your bots online:")

@@ -11,7 +11,7 @@ Hermes has two slash-command surfaces:
 - **Interactive CLI slash commands** — handled by `cli.py` / `hermes_cli/commands.py`
 - **Messaging slash commands** — handled by `gateway/run.py`
 
-Installed skills are also exposed as dynamic slash commands on both surfaces.
+Installed skills are also exposed as dynamic slash commands on both surfaces. That includes bundled skills like `/plan`, which opens plan mode and saves markdown plans under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 ## Interactive CLI slash commands
 
@@ -31,7 +31,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
 | `/compress` | Manually compress conversation context (flush memories + summarize) |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
-| `/background` | Run a prompt in the background (usage: /background &lt;prompt&gt;) |
+| `/background <prompt>` | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
+| `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 
 ### Configuration
 
@@ -62,7 +63,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show this help message |
-| `/usage` | Show token usage for the current session |
+| `/usage` | Show token usage, cost breakdown, and session duration |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` | Show gateway/messaging platform status |
 | `/paste` | Check clipboard for an image and attach it |
@@ -103,12 +104,13 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/compress` | Manually compress conversation context. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
-| `/usage` | Show token usage for the current session. |
+| `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, and session duration. |
 | `/insights [days]` | Show usage analytics. |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
-| `/background &lt;prompt&gt;` | Run a prompt in a separate background session. |
+| `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
+| `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 | `/reload-mcp` | Reload MCP servers from config. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/help` | Show messaging help. |
@@ -117,6 +119,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 ## Notes
 
 - `/skin`, `/tools`, `/toolsets`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, and `/verbose` are **CLI-only** commands.
-- `/status`, `/stop`, `/sethome`, `/resume`, `/background`, and `/update` are **messaging-only** commands.
-- `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
+- `/status`, `/stop`, `/sethome`, `/resume`, and `/update` are **messaging-only** commands.
+- `/background`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

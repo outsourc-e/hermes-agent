@@ -118,6 +118,14 @@ DEFAULT_CONFIG = {
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
         "docker_volumes": [],
+        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
+        # Default off because passing host directories into a sandbox weakens isolation.
+        "docker_mount_cwd_to_workspace": False,
+        # Persistent shell — keep a long-lived bash shell across execute() calls
+        # so cwd/env vars/shell variables survive between commands.
+        # Enabled by default for non-local backends (SSH); local is always opt-in
+        # via TERMINAL_LOCAL_PERSISTENT env var.
+        "persistent_shell": True,
     },
     
     "browser": {
@@ -129,7 +137,7 @@ DEFAULT_CONFIG = {
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
     "checkpoints": {
-        "enabled": False,
+        "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
     
@@ -138,6 +146,12 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
         "summary_provider": "auto",
+    },
+    "smart_model_routing": {
+        "enabled": False,
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+        "cheap_model": {},
     },
     
     # Auxiliary model config — provider:model for each side task.
@@ -150,30 +164,50 @@ DEFAULT_CONFIG = {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
+            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
         },
         "web_extract": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "compression": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "session_search": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "skills_hub": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
+        },
+        "approval": {
+            "provider": "auto",
+            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "base_url": "",
+            "api_key": "",
         },
         "mcp": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "flush_memories": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
     },
     
@@ -183,7 +217,14 @@ DEFAULT_CONFIG = {
         "resume_display": "full",
         "bell_on_complete": False,
         "show_reasoning": False,
+        "streaming": False,
+        "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+    },
+
+    # Privacy settings
+    "privacy": {
+        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
     
     # Text-to-speech configuration
@@ -205,7 +246,8 @@ DEFAULT_CONFIG = {
     },
     
     "stt": {
-        "provider": "local",  # "local" (free, faster-whisper) | "openai" (Whisper API)
+        "enabled": True,
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
         },
@@ -243,6 +285,8 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
+        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -263,6 +307,15 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+    },
+
+    # Approval mode for dangerous commands:
+    #   manual — always prompt the user (default)
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   off    — skip all approval prompts (equivalent to --yolo)
+    "approvals": {
+        "mode": "manual",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -284,7 +337,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 7,
+    "_config_version": 8,
 }
 
 # =============================================================================
@@ -405,6 +458,20 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
         "advanced": True,
+    },
+    "DEEPSEEK_API_KEY": {
+        "description": "DeepSeek API key for direct DeepSeek access",
+        "prompt": "DeepSeek API Key",
+        "url": "https://platform.deepseek.com/api_keys",
+        "password": True,
+        "category": "provider",
+    },
+    "DEEPSEEK_BASE_URL": {
+        "description": "Custom DeepSeek API base URL (advanced)",
+        "prompt": "DeepSeek Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
     },
 
     # ── Tool API keys ──
@@ -950,6 +1017,19 @@ _FALLBACK_COMMENT = """
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
+#
+# ── Smart Model Routing ────────────────────────────────────────────────
+# Optional cheap-vs-strong routing for simple turns.
+# Keeps the primary model for complex work, but can route short/simple
+# messages to a cheaper model across providers.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openrouter
+#     model: google/gemini-2.5-flash
 """
 
 
@@ -980,6 +1060,19 @@ _COMMENTED_SECTIONS = """
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
+#
+# ── Smart Model Routing ────────────────────────────────────────────────
+# Optional cheap-vs-strong routing for simple turns.
+# Keeps the primary model for complex work, but can route short/simple
+# messages to a cheaper model across providers.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openrouter
+#     model: google/gemini-2.5-flash
 """
 
 
@@ -1370,9 +1463,11 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

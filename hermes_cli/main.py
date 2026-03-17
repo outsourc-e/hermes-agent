@@ -54,16 +54,11 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback
-from dotenv import load_dotenv
-from hermes_cli.config import get_env_path, get_hermes_home
-_user_env = get_env_path()
-if _user_env.exists():
-    try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
-load_dotenv(dotenv_path=PROJECT_ROOT / '.env', override=False)
+# Load .env from ~/.hermes/.env first, then project root as dev fallback.
+# User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import get_hermes_home
+from hermes_cli.env_loader import load_hermes_dotenv
+load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))
@@ -479,6 +474,13 @@ def cmd_chat(args):
         print()
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
+
+    # Start update check in background (runs while other init happens)
+    try:
+        from hermes_cli.banner import prefetch_update_check
+        prefetch_update_check()
+    except Exception:
+        pass
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:
@@ -1110,8 +1112,32 @@ def _model_flow_custom(config):
 
     effective_key = api_key or current_key
 
+    from hermes_cli.models import probe_api_models
+
+    probe = probe_api_models(effective_key, effective_url)
+    if probe.get("used_fallback") and probe.get("resolved_base_url"):
+        print(
+            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
+            f"not the exact URL you entered. Saving the working base URL instead."
+        )
+        effective_url = probe["resolved_base_url"]
+        if base_url:
+            base_url = effective_url
+    elif probe.get("models") is not None:
+        print(
+            f"Verified endpoint via {probe.get('probed_url')} "
+            f"({len(probe.get('models') or [])} model(s) visible)"
+        )
+    else:
+        print(
+            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
+            f"Hermes will still save it."
+        )
+        if probe.get("suggested_base_url"):
+            print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
+
     if base_url:
-        save_env_value("OPENAI_BASE_URL", base_url)
+        save_env_value("OPENAI_BASE_URL", effective_url)
     if api_key:
         save_env_value("OPENAI_API_KEY", api_key)
 
@@ -1373,6 +1399,12 @@ _PROVIDER_MODELS = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "moonshot": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
     "minimax": [
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
@@ -1454,8 +1486,8 @@ def _model_flow_kimi(config, current_model=""):
             "kimi-k2-thinking-turbo",
         ]
     else:
-        # Legacy Moonshot models
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        # Legacy Moonshot models (excludes Coding Plan-only models)
+        model_list = _PROVIDER_MODELS.get("moonshot", [])
 
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
@@ -1857,6 +1889,18 @@ def cmd_version(args):
     except ImportError:
         print("OpenAI SDK: Not installed")
 
+    # Show update status (synchronous — acceptable since user asked for version info)
+    try:
+        from hermes_cli.banner import check_for_updates
+        behind = check_for_updates()
+        if behind and behind > 0:
+            commits_word = "commit" if behind == 1 else "commits"
+            print(f"Update available: {behind} {commits_word} behind — run 'hermes update'")
+        elif behind == 0:
+            print("Up to date")
+    except Exception:
+        pass
+
 
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
@@ -1991,6 +2035,32 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
 
 
+def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Optional[str]:
+    stash_list = subprocess.run(
+        git_cmd + ["stash", "list", "--format=%gd %H"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in stash_list.stdout.splitlines():
+        selector, _, commit = line.partition(" ")
+        if commit.strip() == stash_ref:
+            return selector.strip()
+    return None
+
+
+
+def _print_stash_cleanup_guidance(stash_ref: str, stash_selector: Optional[str] = None) -> None:
+    print("  Check `git status` first so you don't accidentally reapply the same change twice.")
+    print("  Find the saved entry with: git stash list --format='%gd %H %s'")
+    if stash_selector:
+        print(f"  Remove it with: git stash drop {stash_selector}")
+    else:
+        print(f"  Look for commit {stash_ref}, then drop its selector with: git stash drop stash@{{N}}")
+
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -2027,7 +2097,27 @@ def _restore_stashed_changes(
         print(f"Resolve manually with: git stash apply {stash_ref}")
         sys.exit(1)
 
-    subprocess.run(git_cmd + ["stash", "drop", stash_ref], cwd=cwd, check=True)
+    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
+    if stash_selector is None:
+        print("⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop.")
+        print("  The stash was left in place. You can remove it manually after checking the result.")
+        _print_stash_cleanup_guidance(stash_ref)
+    else:
+        drop = subprocess.run(
+            git_cmd + ["stash", "drop", stash_selector],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if drop.returncode != 0:
+            print("⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry.")
+            if drop.stdout.strip():
+                print(drop.stdout.strip())
+            if drop.stderr.strip():
+                print(drop.stderr.strip())
+            print("  The stash was left in place. You can remove it manually after checking the result.")
+            _print_stash_cleanup_guidance(stash_ref, stash_selector)
+
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
     return True
@@ -2211,26 +2301,121 @@ def cmd_update(args):
         print()
         print("✓ Update complete!")
         
-        # Auto-restart gateway if it's running as a systemd service
+        # Auto-restart gateway if it's running.
+        # Uses the PID file (scoped to HERMES_HOME) to find this
+        # installation's gateway — safe with multiple installations.
         try:
-            check = subprocess.run(
-                ["systemctl", "--user", "is-active", "hermes-gateway"],
-                capture_output=True, text=True, timeout=5,
+            from gateway.status import get_running_pid, remove_pid_file
+            from hermes_cli.gateway import (
+                get_service_name, get_launchd_plist_path, is_macos, is_linux,
+                refresh_launchd_plist_if_needed,
+                _ensure_user_systemd_env, get_systemd_linger_status,
             )
-            if check.stdout.strip() == "active":
-                print()
-                print("→ Gateway service is running — restarting to pick up changes...")
-                restart = subprocess.run(
-                    ["systemctl", "--user", "restart", "hermes-gateway"],
-                    capture_output=True, text=True, timeout=15,
+            import signal as _signal
+
+            _gw_service_name = get_service_name()
+            existing_pid = get_running_pid()
+            has_systemd_service = False
+            has_launchd_service = False
+
+            try:
+                _ensure_user_systemd_env()
+                check = subprocess.run(
+                    ["systemctl", "--user", "is-active", _gw_service_name],
+                    capture_output=True, text=True, timeout=5,
                 )
-                if restart.returncode == 0:
-                    print("✓ Gateway restarted.")
-                else:
-                    print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
-                    print("  Try manually: hermes gateway restart")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass  # No systemd (macOS, WSL1, etc.) — skip silently
+                has_systemd_service = check.stdout.strip() == "active"
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+
+            # Check for macOS launchd service
+            if is_macos():
+                try:
+                    plist_path = get_launchd_plist_path()
+                    if plist_path.exists():
+                        check = subprocess.run(
+                            ["launchctl", "list", "ai.hermes.gateway"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        has_launchd_service = check.returncode == 0
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+            if existing_pid or has_systemd_service or has_launchd_service:
+                print()
+
+                # When a service manager is handling the gateway, let it
+                # manage the lifecycle — don't manually SIGTERM the PID
+                # (launchd KeepAlive would respawn immediately, causing races).
+                if has_systemd_service:
+                    import time as _time
+                    if existing_pid:
+                        try:
+                            os.kill(existing_pid, _signal.SIGTERM)
+                            print(f"→ Stopped gateway process (PID {existing_pid})")
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                        remove_pid_file()
+                    _time.sleep(1)  # Brief pause for port/socket release
+                    print("→ Restarting gateway service...")
+                    restart = subprocess.run(
+                        ["systemctl", "--user", "restart", _gw_service_name],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if restart.returncode == 0:
+                        print("✓ Gateway restarted.")
+                    else:
+                        print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                        # Check if linger is the issue
+                        if is_linux():
+                            linger_ok, _detail = get_systemd_linger_status()
+                            if linger_ok is not True:
+                                import getpass
+                                _username = getpass.getuser()
+                                print()
+                                print("  Linger must be enabled for the gateway user service to function.")
+                                print(f"  Run:  sudo loginctl enable-linger {_username}")
+                                print()
+                                print("  Then restart the gateway:")
+                                print("    hermes gateway restart")
+                            else:
+                                print("  Try manually: hermes gateway restart")
+                elif has_launchd_service:
+                    # Refresh the plist first (picks up --replace and other
+                    # changes from the update we just pulled).
+                    refresh_launchd_plist_if_needed()
+                    # Explicit stop+start — don't rely on KeepAlive respawn
+                    # after a manual SIGTERM, which would race with the
+                    # PID file cleanup.
+                    print("→ Restarting gateway service...")
+                    stop = subprocess.run(
+                        ["launchctl", "stop", "ai.hermes.gateway"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    start = subprocess.run(
+                        ["launchctl", "start", "ai.hermes.gateway"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if start.returncode == 0:
+                        print("✓ Gateway restarted via launchd.")
+                    else:
+                        print(f"⚠ Gateway restart failed: {start.stderr.strip()}")
+                        print("  Try manually: hermes gateway restart")
+                elif existing_pid:
+                    try:
+                        os.kill(existing_pid, _signal.SIGTERM)
+                        print(f"→ Stopped gateway process (PID {existing_pid})")
+                    except ProcessLookupError:
+                        pass  # Already gone
+                    except PermissionError:
+                        print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                    remove_pid_file()
+                    print("  ℹ️  Gateway was running manually (not as a service).")
+                    print("  Restart it with: hermes gateway run")
+        except Exception as e:
+            logger.debug("Gateway restart during update failed: %s", e)
         
         print()
         print("Tip: You can now select a provider and model:")
@@ -2307,7 +2492,7 @@ Examples:
     hermes gateway                Run messaging gateway
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install as system service
+    hermes gateway install        Install gateway background service
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session
@@ -2475,23 +2660,30 @@ For more help on a command:
     
     # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
+    gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway stop
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
+    gateway_stop.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway restart
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
+    gateway_restart.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
+    gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway install
     gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
+    gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
+    gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")
     
     # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="Uninstall gateway service")
+    gateway_uninstall.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
 
     # gateway setup
     gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
@@ -3025,7 +3217,11 @@ For more help on a command:
 
         elif action == "export":
             if args.session_id:
-                data = db.export_session(args.session_id)
+                resolved_session_id = db.resolve_session_id(args.session_id)
+                if not resolved_session_id:
+                    print(f"Session '{args.session_id}' not found.")
+                    return
+                data = db.export_session(resolved_session_id)
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return
@@ -3040,13 +3236,17 @@ For more help on a command:
                 print(f"Exported {len(sessions)} sessions to {args.output}")
 
         elif action == "delete":
+            resolved_session_id = db.resolve_session_id(args.session_id)
+            if not resolved_session_id:
+                print(f"Session '{args.session_id}' not found.")
+                return
             if not args.yes:
-                confirm = input(f"Delete session '{args.session_id}' and all its messages? [y/N] ")
+                confirm = input(f"Delete session '{resolved_session_id}' and all its messages? [y/N] ")
                 if confirm.lower() not in ("y", "yes"):
                     print("Cancelled.")
                     return
-            if db.delete_session(args.session_id):
-                print(f"Deleted session '{args.session_id}'.")
+            if db.delete_session(resolved_session_id):
+                print(f"Deleted session '{resolved_session_id}'.")
             else:
                 print(f"Session '{args.session_id}' not found.")
 
@@ -3062,10 +3262,14 @@ For more help on a command:
             print(f"Pruned {count} session(s).")
 
         elif action == "rename":
+            resolved_session_id = db.resolve_session_id(args.session_id)
+            if not resolved_session_id:
+                print(f"Session '{args.session_id}' not found.")
+                return
             title = " ".join(args.title)
             try:
-                if db.set_session_title(args.session_id, title):
-                    print(f"Session '{args.session_id}' renamed to: {title}")
+                if db.set_session_title(resolved_session_id, title):
+                    print(f"Session '{resolved_session_id}' renamed to: {title}")
                 else:
                     print(f"Session '{args.session_id}' not found.")
             except ValueError as e:
