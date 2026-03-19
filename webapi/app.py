@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,6 +12,17 @@ from webapi.routes.models import router as models_router
 from webapi.routes.sessions import router as sessions_router
 from webapi.routes.skills import router as skills_router
 
+# Default origins cover common local dev ports (3000-3010) + any explicitly
+# configured origin via HERMES_CORS_ORIGINS (comma-separated).
+_DEFAULT_ORIGINS = [f"http://localhost:{p}" for p in range(3000, 3011)] + \
+                   [f"http://127.0.0.1:{p}" for p in range(3000, 3011)]
+
+def _get_cors_origins() -> list[str]:
+    extra = os.environ.get("HERMES_CORS_ORIGINS", "").strip()
+    if extra:
+        return [o.strip() for o in extra.split(",") if o.strip()]
+    return _DEFAULT_ORIGINS
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -19,10 +32,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3002",
-            "http://127.0.0.1:3002",
-        ],
+        allow_origins=_get_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
