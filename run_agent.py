@@ -2513,10 +2513,18 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
-                if not isinstance(content, str):
-                    content = str(content)
-
-                normalized.append({"role": role, "content": content})
+                # Preserve multipart content lists (text + input_image) for vision support.
+                # Only stringify if content is not already a valid list of content parts.
+                if isinstance(content, list) and any(
+                    isinstance(p, dict) and p.get("type") in {"input_text", "input_image"}
+                    for p in content
+                ):
+                    # Keep structured content as-is for the Responses API
+                    normalized.append({"role": role, "content": content})
+                else:
+                    if not isinstance(content, str):
+                        content = str(content)
+                    normalized.append({"role": role, "content": content})
                 continue
 
             raise ValueError(
