@@ -973,6 +973,8 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+
+
 # ============================================================================
 # HermesCLI Class
 # ============================================================================
@@ -1046,6 +1048,14 @@ class HermesCLI:
         _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
         _FALLBACK_MODEL = "anthropic/claude-opus-4.6"
         self.model = model or _config_model or _FALLBACK_MODEL
+        # Auto-detect model from local server if still on fallback
+        if self.model == _FALLBACK_MODEL:
+            _base_url = _model_config.get("base_url", "") if isinstance(_model_config, dict) else ""
+            if "localhost" in _base_url or "127.0.0.1" in _base_url:
+                from hermes_cli.runtime_provider import _auto_detect_local_model
+                _detected = _auto_detect_local_model(_base_url)
+                if _detected:
+                    self.model = _detected
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
@@ -1251,6 +1261,8 @@ class HermesCLI:
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         model_name = self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
@@ -2880,6 +2892,14 @@ class HermesCLI:
                     for mid, desc in curated:
                         current_marker = " ← current" if (is_active and mid == self.model) else ""
                         print(f"      {mid}{current_marker}")
+                elif p["id"] == "custom":
+                    from hermes_cli.models import _get_custom_base_url
+                    custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                    if custom_url:
+                        print(f"      endpoint: {custom_url}")
+                    if is_active:
+                        print(f"      model: {self.model} ← current")
+                    print(f"      (use /model custom:<model-name>)")
                 else:
                     print(f"      (use /model {p['id']}:<model-name>)")
                 print()
@@ -3916,7 +3936,7 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "ws://localhost:9222"
+        _DEFAULT_CDP = "http://localhost:9222"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
@@ -5877,7 +5897,12 @@ class HermesCLI:
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
-            """Tab: accept completion and re-trigger if we just completed a provider.
+            """Tab: accept completion, auto-suggestion, or start completions.
+
+            Priority:
+            1. Completion menu open → accept selected completion
+            2. Ghost text suggestion available → accept auto-suggestion
+            3. Otherwise → start completion menu
 
             After accepting a provider like 'anthropic:', the completion menu
             closes and complete_while_typing doesn't fire (no keystroke).
@@ -5886,6 +5911,7 @@ class HermesCLI:
             """
             buf = event.current_buffer
             if buf.complete_state:
+                # Completion menu is open — accept the selection
                 completion = buf.complete_state.current_completion
                 if completion is None:
                     # Menu open but nothing selected — select first then grab it
@@ -5899,8 +5925,11 @@ class HermesCLI:
                 text = buf.document.text_before_cursor
                 if text.startswith("/model ") and text.endswith(":"):
                     buf.start_completion()
+            elif buf.suggestion and buf.suggestion.text:
+                # No completion menu, but there's a ghost text auto-suggestion — accept it
+                buf.insert_text(buf.suggestion.text)
             else:
-                # No menu open — start completions from scratch
+                # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
 
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
