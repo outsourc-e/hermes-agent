@@ -1230,6 +1230,35 @@ class APIServerAdapter(BasePlatformAdapter):
             {"id": model_id, "description": description}
             for model_id, description in curated_models_for_provider(provider)
         ]
+
+        # Ensure the currently configured model is always in the list
+        current_model = (current.get("model") or "").strip()
+        if current_model:
+            model_ids = {m["id"] for m in models}
+            if current_model not in model_ids:
+                models.insert(0, {"id": current_model, "description": "current"})
+
+        # Discover local Ollama models if reachable
+        try:
+            import aiohttp as _aiohttp
+            for ollama_base in ["http://127.0.0.1:11434", "http://localhost:11434"]:
+                try:
+                    async with _aiohttp.ClientSession() as _sess:
+                        async with _sess.get(f"{ollama_base}/api/tags", timeout=_aiohttp.ClientTimeout(total=2)) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                model_ids = {m["id"] for m in models}
+                                for om in (data.get("models") or []):
+                                    name = om.get("name") or om.get("model") or ""
+                                    if name and name not in model_ids:
+                                        models.append({"id": name, "description": "local"})
+                                        model_ids.add(name)
+                                break
+                except Exception:
+                    continue
+        except ImportError:
+            pass
+
         providers = list_available_providers()
         return web.json_response({"provider": provider, "models": models, "providers": providers})
 
