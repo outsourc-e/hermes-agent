@@ -112,6 +112,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Meta
     "llama": 131072,
     # Qwen
+    "qwen3.6-plus": 1048576,
     "qwen": 131072,
     # MiniMax
     "minimax": 204800,
