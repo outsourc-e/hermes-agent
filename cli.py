@@ -3969,7 +3969,6 @@ class HermesCLI:
             return []
         try:
             sessions = self._session_db.list_sessions_rich(
-                source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
             )
@@ -4227,6 +4226,25 @@ class HermesCLI:
             )
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+    def _handle_continue_command(self) -> None:
+        """Handle /continue — resume the most recent session (no args needed)."""
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        recent = self._list_recent_sessions(limit=1)
+        if not recent:
+            _cprint("  No previous session found to continue.")
+            return
+
+        target_id = recent[0]["id"]
+        if target_id == self.session_id:
+            _cprint("  Already on the most recent session.")
+            return
+
+        # Delegate to /resume with the resolved ID
+        self._handle_resume_command(f"/resume {target_id}")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
@@ -5451,8 +5469,12 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
+        elif canonical == "sessions":
+            self._show_recent_sessions(reason="sessions", limit=20)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "continue":
+            self._handle_continue_command()
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "provider":
