@@ -1041,6 +1041,7 @@ def resolve_provider(
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
+        "atomic-chat": "custom", "atomicchat": "custom", "atomic_chat": "custom",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

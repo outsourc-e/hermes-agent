@@ -245,6 +245,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
+    "anthropic-oauth": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-5-20250929",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-5-20251001",
+    ],
     "deepseek": [
         "deepseek-chat",
         "deepseek-reasoner",
@@ -695,6 +704,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
+    ProviderEntry("anthropic-oauth", "Anthropic OAuth",          "Anthropic OAuth (Claude models via OAuth-backed local bridge)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
@@ -725,7 +735,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 
-
 _PROVIDER_ALIASES = {
     "openai": "openai-codex",
     "glm": "zai",
@@ -753,6 +762,8 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "claude-oauth": "anthropic-oauth",
+    "anthropicoauth": "anthropic-oauth",
     "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
@@ -1249,7 +1260,6 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
