@@ -736,6 +736,45 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def skills_categories(task_id: str = None) -> str:
+    """List available skill categories with counts and descriptions."""
+    try:
+        payload = json.loads(skills_list(task_id=task_id))
+        if not payload.get("success"):
+            return json.dumps(payload, ensure_ascii=False)
+
+        skills = payload.get("skills") if isinstance(payload.get("skills"), list) else []
+        counts: Dict[str, int] = {}
+        for skill in skills:
+            if not isinstance(skill, dict):
+                continue
+            category = skill.get("category")
+            if isinstance(category, str) and category.strip():
+                counts[category] = counts.get(category, 0) + 1
+
+        categories = []
+        for category in sorted(counts):
+            desc = _load_category_description(SKILLS_DIR / category)
+            categories.append(
+                {
+                    "name": category,
+                    "count": counts[category],
+                    "description": desc or "",
+                }
+            )
+
+        return json.dumps(
+            {
+                "success": True,
+                "categories": categories,
+                "count": len(categories),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
 # ── Plugin skill serving ──────────────────────────────────────────────────
 
 
