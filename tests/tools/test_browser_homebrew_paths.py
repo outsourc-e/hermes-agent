@@ -212,7 +212,10 @@ class TestBrowserRequirements:
     def test_cdp_override_does_not_require_agent_browser_cli(self, monkeypatch):
         monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222/devtools/browser/test")
         monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: (_ for _ in ()).throw(FileNotFoundError("not found")))
+        monkeypatch.setattr(
+            "tools.browser_tool._find_agent_browser",
+            lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("not found")),
+        )
 
         assert check_browser_requirements() is True
 
@@ -221,7 +224,22 @@ class TestBrowserRequirements:
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
         monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
         monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr(
+            "tools.browser_tool._find_agent_browser",
+            lambda *args, **kwargs: "npx agent-browser",
+        )
+
+        assert check_browser_requirements() is False
+
+    def test_browser_requirements_does_not_auto_install(self, monkeypatch):
+        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
+        monkeypatch.setattr("tools.browser_tool._get_cdp_override", lambda: None)
+        monkeypatch.setattr(
+            "tools.browser_tool._find_agent_browser",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-install lookup"))
+            if kwargs.get("auto_install") is not False
+            else (_ for _ in ()).throw(FileNotFoundError("not found")),
+        )
 
         assert check_browser_requirements() is False
 
@@ -230,7 +248,10 @@ class TestRunBrowserCommandTermuxFallback:
     def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr(
+            "tools.browser_tool._find_agent_browser",
+            lambda *args, **kwargs: "npx agent-browser",
+        )
         monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
 
         result = _run_browser_command("task-1", "navigate", ["https://example.com"])
