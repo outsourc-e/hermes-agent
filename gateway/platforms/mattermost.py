@@ -269,9 +269,14 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
+            # Thread support: use the thread's root_id from metadata when
+            # replying inside an existing CRT Thread.  Mattermost requires
+            # root_id to point to the root-level post, not a nested reply.
+            # Fall back to reply_to for top-level channel messages (where
+            # the user's message itself is a valid thread root).
             if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+                thread_root = (metadata or {}).get("thread_id")
+                payload["root_id"] = thread_root or reply_to
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
