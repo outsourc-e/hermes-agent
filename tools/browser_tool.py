@@ -3502,8 +3502,14 @@ def check_browser_requirements() -> bool:
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.
+    # Prefer the non-installing lookup so availability checks never block on
+    # dependency bootstrap. Fall back to the legacy no-arg call shape for tests
+    # or extensions that monkeypatch _find_agent_browser with an older stub.
     try:
-        browser_cmd = _find_agent_browser(auto_install=False)
+        try:
+            browser_cmd = _find_agent_browser(auto_install=False)
+        except TypeError:
+            browser_cmd = _find_agent_browser()
     except FileNotFoundError:
         return False
 
